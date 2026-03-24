@@ -1,0 +1,72 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  name      String?
+  role      String   @default("caregiver") // "admin", "caregiver", "user"
+  patients  Patient[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Patient {
+  id                Int      @id @default(autoincrement())
+  name              String
+  age               Int
+  diagnosis         String?
+  baselineHeartRate Int      @default(80)
+  sensitivityLevel  Int      @default(3)
+  primaryCaregiverId Int
+  primaryCaregiver   User     @relation(fields: [primaryCaregiverId], references: [id])
+  avatar            String?
+  vitals            Vital[]
+  alerts            Alert[]
+  devices           Device[]
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Device {
+  id        Int      @id @default(autoincrement())
+  deviceId  String   @unique
+  patientId Int
+  patient   Patient  @relation(fields: [patientId], references: [id])
+  status    String   @default("active")
+  lastSeen  DateTime @default(now())
+}
+
+model Vital {
+  id          Int      @id @default(autoincrement())
+  patientId   Int
+  patient     Patient  @relation(fields: [patientId], references: [id])
+  heartRate   Int
+  spo2        Int
+  motion      Float
+  gsr         Float
+  stressLevel Int
+  status      String
+  recordedAt  DateTime @default(now())
+}
+
+model Alert {
+  id          Int      @id @default(autoincrement())
+  patientId   Int
+  patient     Patient  @relation(fields: [patientId], references: [id])
+  type        String   // "vital", "system", "routine", "action"
+  severity    String   // "info", "warning", "emergency"
+  message     String
+  timeStr     String   // E.g., "10:30 AM"
+  recordedAt  DateTime @default(now())
+}
