@@ -25,17 +25,36 @@ export default function CaregiverDashboard({ onLogout, role }) {
         return;
       }
       try {
-        const res = await fetch(`${API_BASE_URL}/api/vitals`, {
-          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-        });
-        if (!res.ok) {
-          if (res.status === 401) onLogout();
-          return;
+        let data;
+        if (deviceIP) {
+          // Direct ESP32 Fetch (Bypassing Backend)
+          // The ESP32 must have CORS headers: "Access-Control-Allow-Origin: *"
+          const espUrl = deviceIP.startsWith('http') ? deviceIP : `http://${deviceIP}`;
+          const res = await fetch(espUrl);
+          if (!res.ok) return;
+          const raw = await res.json();
+          data = {
+            heartRate: raw.heartRate || raw.heart_rate || '--',
+            spo2: raw.spo2 || '--',
+            motion: raw.motion || '--',
+            gsr: raw.gsr || '--',
+            status: 'Live (ESP32 Direct)',
+            stressLevel: raw.stressLevel || '--'
+          };
+        } else {
+          // Fallback to Backend Vitals
+          const res = await fetch(`${API_BASE_URL}/api/vitals`, {
+            headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+          });
+          if (!res.ok) {
+            if (res.status === 401) onLogout();
+            return;
+          }
+          data = await res.json();
         }
-        const data = await res.json();
         setVitals(data);
       } catch (err) {
-        console.error('Failed to fetch vitals');
+        console.error('Failed to fetch vitals', err);
       }
     };
     
@@ -78,7 +97,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
     const interval = setInterval(fetchVitals, 2000);
     const historyInterval = setInterval(fetchHistory, 5000);
     return () => { clearInterval(interval); clearInterval(historyInterval); };
-  }, [onLogout, isConnected]);
+  }, [onLogout, isConnected, deviceIP]);
 
   // Handlers
   const handleChildSelect = (val) => console.log('Child selected:', val);
