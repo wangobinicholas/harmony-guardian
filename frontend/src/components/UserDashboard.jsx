@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { LogoIcon, HomeIcon, PhoneIcon, HeartPulseIcon, LungsIcon, EmergencyIcon, LogoutIcon } from './Icons';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export default function UserDashboard({ onLogout, role }) {
   const [vitals, setVitals] = useState({ heartRate: '--', spo2: '--', status: 'Connecting...' });

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, BarChart, Bar } from 'recharts';
 import { LogoIcon, DashboardIcon, AnalyticsIcon, BellIcon, SettingsIcon, EmergencyIcon, UserProfileIcon, HeartPulseIcon, ClipboardIcon, ActivityIcon, WifiIcon, BrainIcon, DocumentIcon, CheckIcon, LogoutIcon } from './Icons';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export default function CaregiverDashboard({ onLogout, role }) {
   const [vitals, setVitals] = useState({ heartRate: '--', spo2: '--', motion: '--', gsr: '--', status: 'Loading...' });

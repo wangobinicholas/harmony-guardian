@@ -20,7 +20,7 @@ export default function LoginView({ onBack, onLogin }) {
     const bodyArgs = isRegistering ? { email, password, name, role: activeRole } : { email, password };
 
     try {
-      const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+      const API_BASE_URL = import.meta.env.VITE_API_URL || '';
       const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

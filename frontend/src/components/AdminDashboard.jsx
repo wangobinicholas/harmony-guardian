@@ -1,6 +1,6 @@
 import { LogoIcon, ServerIcon, UsersIcon, BellIcon, ShieldIcon, LogoutIcon, SmartphoneIcon } from './Icons';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 export default function AdminDashboard({ onLogout, role }) {
   const [activePanel, setActivePanel] = useState('system'); // 'system', 'users', 'alerts', 'settings'
