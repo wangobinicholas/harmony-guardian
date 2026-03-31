@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { io } from 'socket.io-client';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, AreaChart, Area, BarChart, Bar } from 'recharts';
 import { LogoIcon, DashboardIcon, AnalyticsIcon, BellIcon, SettingsIcon, EmergencyIcon, UserProfileIcon, HeartPulseIcon, ClipboardIcon, ActivityIcon, WifiIcon, BrainIcon, DocumentIcon, CheckIcon, LogoutIcon } from './Icons';
 
@@ -8,7 +9,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
   const [vitals, setVitals] = useState({ heartRate: '--', spo2: '--', motion: '--', gsr: '--', status: 'Loading...' });
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState([]);
-  
+
   // UI State
   const [activePanel, setActivePanel] = useState('dashboard'); // 'dashboard', 'analytics', 'alerts', 'settings'
   const [notifyOpen, setNotifyOpen] = useState(false);
@@ -17,6 +18,13 @@ export default function CaregiverDashboard({ onLogout, role }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [alertFilter, setAlertFilter] = useState('all');
   const [mainAlertFilter, setMainAlertFilter] = useState('all');
+  const wsRef = React.useRef(null);
+
+  const sendESPCommand = (cmd) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(cmd);
+    }
+  };
 
   useEffect(() => {
     const fetchVitals = async () => {
@@ -25,24 +33,8 @@ export default function CaregiverDashboard({ onLogout, role }) {
         return;
       }
       try {
-        let data;
-        if (deviceIP) {
-          // Direct ESP32 Fetch (Bypassing Backend)
-          // The ESP32 must have CORS headers: "Access-Control-Allow-Origin: *"
-          const espUrl = deviceIP.startsWith('http') ? deviceIP : `http://${deviceIP}`;
-          const res = await fetch(espUrl);
-          if (!res.ok) return;
-          const raw = await res.json();
-          data = {
-            heartRate: raw.heartRate || raw.heart_rate || '--',
-            spo2: raw.spo2 || '--',
-            motion: raw.motion || '--',
-            gsr: raw.gsr || '--',
-            status: 'Live (ESP32 Direct)',
-            stressLevel: raw.stressLevel || '--'
-          };
-        } else {
-          // Fallback to Backend Vitals
+        if (!deviceIP) {
+          // Fallback to Backend Vitals just for initial load
           const res = await fetch(`${API_BASE_URL}/api/vitals`, {
             headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
           });
@@ -50,14 +42,14 @@ export default function CaregiverDashboard({ onLogout, role }) {
             if (res.status === 401) onLogout();
             return;
           }
-          data = await res.json();
+          const data = await res.json();
+          setVitals(data);
         }
-        setVitals(data);
       } catch (err) {
         console.error('Failed to fetch vitals', err);
       }
     };
-    
+
     const fetchAlerts = async () => {
       try {
         const res = await fetch(`${API_BASE_URL}/api/alerts`, {
@@ -68,7 +60,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
           setAlerts(data);
         }
       } catch (err) {
-        console.error('Failed to fetch alerts');
+        console.error('Failed to fetch alerts', err);
       }
     };
 
@@ -80,29 +72,99 @@ export default function CaregiverDashboard({ onLogout, role }) {
         });
         if (res.ok) {
           const data = await res.json();
-          setHistory(data.map(v => ({ 
-            time: v.timeStr || new Date(v.recordedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), 
-            heartRate: v.heartRate, 
-            stressLevel: v.stressLevel, 
-            spo2: v.spo2, 
-            motion: v.motion 
+          setHistory(data.map(v => ({
+            time: v.timeStr || new Date(v.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            heartRate: v.heartRate,
+            stressLevel: v.stressLevel,
+            spo2: v.spo2,
+            motion: v.motion
           })));
         }
-      } catch (err) {}
+      } catch (err) { }
     };
 
     fetchVitals();
     fetchAlerts();
     fetchHistory();
-    const interval = setInterval(fetchVitals, 2000);
-    const historyInterval = setInterval(fetchHistory, 5000);
-    return () => { clearInterval(interval); clearInterval(historyInterval); };
+
+    let interval, historyInterval, socket;
+
+    if (isConnected) {
+      if (deviceIP) {
+        // WebSocket directly to ESP32
+        const wsUrl = `ws://${deviceIP.replace(/^https?:\/\//, '')}:81`;
+        wsRef.current = new WebSocket(wsUrl);
+        wsRef.current.onopen = () => console.log('Connected to ESP32 WebSocket');
+        wsRef.current.onmessage = (event) => {
+          try {
+            const raw = JSON.parse(event.data);
+            const statusMap = { 0: 'Normal', 1: 'Warning', 2: 'Emergency' };
+            const newVital = {
+              heartRate: raw.heartRate || '--',
+              spo2: raw.spo2 || '--',
+              motion: raw.motion !== undefined ? raw.motion : '--',
+              gsr: raw.gsr !== undefined ? raw.gsr : '--',
+              status: statusMap[raw.state] || 'Live (ESP32 Direct)',
+              stressLevel: raw.stressLevel || '--'
+            };
+            setVitals(newVital);
+            setHistory(prev => {
+              const updatedItem = {
+                time: raw.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                heartRate: newVital.heartRate,
+                stressLevel: newVital.stressLevel,
+                spo2: newVital.spo2,
+                motion: newVital.motion
+              };
+              const updated = [...prev, updatedItem];
+              return updated.slice(-30);
+            });
+          } catch (e) { console.error('WS parse error', e); }
+        };
+        wsRef.current.onclose = () => {
+          setVitals(prev => ({ ...prev, status: 'Disconnected' }));
+        };
+      } else {
+        // Zero-traffic Solution: Socket.IO connection to backend!
+        const socketUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+        socket = io(socketUrl);
+
+        socket.on('connect', () => console.log('Connected to backend Socket.IO'));
+
+        socket.on('esp32Data', (newVital) => {
+          setVitals(newVital);
+          // Prepend to history dynamically to avoid polling
+          setHistory(prev => {
+            const updatedItem = {
+              time: newVital.timeStr || new Date(newVital.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              heartRate: newVital.heartRate,
+              stressLevel: newVital.stressLevel,
+              spo2: newVital.spo2,
+              motion: newVital.motion
+            };
+            // Assuming history array is shown chronologically in charts, we add to the end
+            const updated = [...prev, updatedItem];
+            return updated.slice(-30); // Keep last 30
+          });
+        });
+
+        // Polling alerts occasionally (could also be migrated to Socket.IO)
+        historyInterval = setInterval(fetchAlerts, 5000);
+      }
+    }
+
+    return () => {
+      if (interval) clearInterval(interval);
+      if (historyInterval) clearInterval(historyInterval);
+      if (socket) socket.disconnect();
+      if (wsRef.current) wsRef.current.close();
+    };
   }, [onLogout, isConnected, deviceIP]);
 
   // Handlers
   const handleChildSelect = (val) => console.log('Child selected:', val);
   const handleCaregiverSearch = (val) => setSearchTerm(val);
-  
+
   const connectToDeviceIP = () => {
     if (!deviceIP) {
       alert("Please enter a device IP address.");
@@ -182,12 +244,12 @@ export default function CaregiverDashboard({ onLogout, role }) {
           </div>
           <div className="header-right">
             <div className="ip-connect-wrap" style={{ display: 'flex', gap: '0.5rem', marginRight: '1rem', alignItems: 'center' }}>
-               <input type="text" id="device-ip-input" placeholder="Device IP Address" className="search-box" style={{ width: '150px', padding: '0.5rem', fontSize: '13px' }} value={deviceIP} onChange={(e) => setDeviceIP(e.target.value)} disabled={isConnected} />
-               {isConnected ? (
-                 <button type="button" className="action-btn outline" onClick={disconnectDevice}>Disconnect</button>
-               ) : (
-                 <button type="button" className="action-btn" onClick={connectToDeviceIP} id="ip-connect-btn">Connect</button>
-               )}
+              <input type="text" id="device-ip-input" placeholder="Device IP Address" className="search-box" style={{ width: '150px', padding: '0.5rem', fontSize: '13px' }} value={deviceIP} onChange={(e) => setDeviceIP(e.target.value)} disabled={isConnected} />
+              {isConnected ? (
+                <button type="button" className="action-btn outline" onClick={disconnectDevice}>Disconnect</button>
+              ) : (
+                <button type="button" className="action-btn" onClick={connectToDeviceIP} id="ip-connect-btn">Connect</button>
+              )}
             </div>
             <div className="header-notify-wrap">
               <button type="button" className="header-icon-btn" id="caregiver-notify-btn" onClick={() => setNotifyOpen(!notifyOpen)} aria-label="Alerts"><span className="alert-count-badge zero" id="caregiver-alert-badge-count">0</span> <BellIcon size={20} /></button>
@@ -275,7 +337,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
                 <div className="card-header" style={{ marginTop: '1rem' }}><h3>Motion activity</h3></div>
                 <p className="text-secondary" style={{ fontSize: '12px' }}>Motion (m/s²): <strong id="motionValueLive">{vitals.motion}</strong> · SpO2: <strong id="spo2Value">{vitals.spo2}</strong>%</p>
               </div>
-              
+
               <div className="alerts-feed-panel">
                 <div className="card-header">
                   <h3>RECENT ALERTS</h3>
@@ -286,7 +348,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
                   </div>
                 </div>
                 <div className="alert-list" id="alertList">
-                  {alerts.length === 0 ? <p className="text-secondary" style={{padding: '1rem'}}>No alerts found.</p> : null}
+                  {alerts.length === 0 ? <p className="text-secondary" style={{ padding: '1rem' }}>No alerts found.</p> : null}
                   {alerts.map(alert => (
                     <div key={alert.id} className="alert-item" data-severity={alert.severity}>
                       <div>
@@ -336,9 +398,9 @@ export default function CaregiverDashboard({ onLogout, role }) {
               <button type="button" className="quick-action-btn secondary" onClick={() => showNotification('Note saved. Add note form would open here.')}><span><ClipboardIcon size={16} /></span> Add Note</button>
               <button type="button" className="quick-action-btn secondary" onClick={() => showNotification('Report generation started.')}><span><DocumentIcon size={16} /></span> Generate Report</button>
               <button type="button" className="quick-action-btn primary" onClick={() => showNotification('Test notification sent.')}><span><BellIcon size={16} /></span> Test Notification</button>
-              <button type="button" className="quick-action-btn danger" id="sosBtn" style={{ marginLeft: 'auto' }} onClick={() => showNotification('SOS Triggered. Contacting emergency services.')}><EmergencyIcon size={16} /> Trigger SOS</button>
-              <button type="button" className="quick-action-btn danger" id="fallBtn" onClick={() => showNotification('Fall detection simulated. Alerting primary caregiver.')}><EmergencyIcon size={16} /> Fall</button>
-              <button type="button" className="quick-action-btn secondary" id="clearBtn" onClick={() => showNotification('Alert cleared.')} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckIcon size={16} /> Clear Alert</button>
+              <button type="button" className="quick-action-btn danger" id="sosBtn" style={{ marginLeft: 'auto' }} onClick={() => { showNotification('SOS Triggered.'); sendESPCommand('emergency:sos'); }}><EmergencyIcon size={16} /> Trigger SOS</button>
+              <button type="button" className="quick-action-btn danger" id="fallBtn" onClick={() => { showNotification('Fall detection simulated.'); sendESPCommand('emergency:fall'); }}><EmergencyIcon size={16} /> Fall</button>
+              <button type="button" className="quick-action-btn secondary" id="clearBtn" onClick={() => { showNotification('Alert cleared.'); sendESPCommand('emergency:clear'); }} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><CheckIcon size={16} /> Clear Alert</button>
             </div>
           </div>
         )}
@@ -439,7 +501,7 @@ export default function CaregiverDashboard({ onLogout, role }) {
                     <span id="caregiver-email-readonly" className="text-secondary">caregiver@harmony.local</span>
                   </div>
                 </div>
-                
+
                 <div className="card" style={{ gridColumn: 'span 6' }}>
                   <div className="card-header"><h3>Security &amp; privacy</h3></div>
                   <p className="text-secondary" style={{ marginBottom: '1rem' }}>Change password, MFA, and session history.</p>

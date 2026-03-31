@@ -6,7 +6,25 @@ const bcrypt = require('bcryptjs');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
+const http = require('http');
+const { Server } = require('socket.io');
+
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('Client connected to Socket.IO:', socket.id);
+  socket.on('disconnect', () => {
+    console.log('Client disconnected:', socket.id);
+  });
+});
+
 app.use(cors());
 app.use(express.json());
 
@@ -194,6 +212,9 @@ app.post('/api/sensor/data', async (req, res) => {
       }
     });
 
+    // Broadcast the new real-time vital data to connected clients
+    io.emit('esp32Data', storedVital);
+
     res.json({ success: true, processed: storedVital });
   } catch (e) {
     console.error("Ingestion Error:", e);
@@ -257,6 +278,6 @@ app.use((req, res) => {
 
 // Since node server.js is crashing recursively trying to kill and restart on Windows port locks, 
 // let's explicitly kill any listener on 3001 if possible or just use server.listen
-const server = app.listen(PORT, () => {
-  console.log(`Harmony Guardian Fully Connected API running on http://localhost:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Harmony Guardian Fully Connected API running on http://localhost:${PORT} with Socket.IO`);
 });

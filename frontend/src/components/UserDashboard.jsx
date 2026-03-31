@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { io } from 'socket.io-client';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { LogoIcon, HomeIcon, PhoneIcon, HeartPulseIcon, LungsIcon, EmergencyIcon, LogoutIcon } from './Icons';
 
@@ -9,6 +10,7 @@ export default function UserDashboard({ onLogout, role }) {
   const [history, setHistory] = useState([]);
   const [activeTab, setActiveTab] = useState('home'); // 'home', 'contact', 'settings'
   const [isConnected, setIsConnected] = useState(false);
+  const [deviceIP, setDeviceIP] = useState('');
 
   // Intervention State
   const [timeLeft, setTimeLeft] = useState(60);
@@ -73,32 +75,82 @@ export default function UserDashboard({ onLogout, role }) {
         });
         if (res.ok) {
           const data = await res.json();
-          setHistory(data.map(v => ({ 
-            time: v.timeStr || new Date(v.recordedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), 
+          setHistory(data.map(v => ({
+            time: v.timeStr || new Date(v.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             heartRate: v.heartRate,
             spo2: v.spo2
           })));
         }
-      } catch (err) {}
+      } catch (err) { }
     };
-    
+
     fetchVitals();
     fetchHistory();
-    const interval = setInterval(fetchVitals, 5000);
-    const histInterval = setInterval(fetchHistory, 10000);
-    return () => { clearInterval(interval); clearInterval(histInterval); };
-  }, [onLogout, isConnected]);
+
+    let socket;
+    let ws;
+    if (isConnected) {
+      if (deviceIP) {
+        const wsUrl = `ws://${deviceIP.replace(/^https?:\/\//, '')}:81`;
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => console.log('Connected to ESP32 WebSocket');
+        ws.onmessage = (event) => {
+          try {
+            const raw = JSON.parse(event.data);
+            const statusMap = { 0: 'Normal', 1: 'Warning', 2: 'Emergency' };
+            const newVital = {
+              heartRate: raw.heartRate || '--',
+              spo2: raw.spo2 || '--',
+              status: statusMap[raw.state] || 'Live Data'
+            };
+            setVitals(newVital);
+            setHistory(prev => {
+              const updatedItem = {
+                time: raw.time || new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                heartRate: newVital.heartRate,
+                spo2: newVital.spo2
+              };
+              const updated = [...prev, updatedItem];
+              return updated.slice(-30);
+            });
+          } catch (e) { }
+        };
+        ws.onclose = () => setVitals(prev => ({ ...prev, status: 'Disconnected' }));
+      } else {
+        const socketUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+        socket = io(socketUrl);
+
+        socket.on('esp32Data', (newVital) => {
+          setVitals(newVital);
+          setHistory(prev => {
+            const updatedItem = {
+              time: newVital.timeStr || new Date(newVital.recordedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              heartRate: newVital.heartRate,
+              spo2: newVital.spo2
+            };
+            const updated = [...prev, updatedItem];
+            return updated.slice(-30);
+          });
+        });
+      }
+    }
+
+    return () => {
+      if (socket) socket.disconnect();
+      if (ws) ws.close();
+    };
+  }, [onLogout, isConnected, deviceIP]);
 
   // Active Ingestion Simulator (ESP32 Mock)
   useEffect(() => {
     let simulatorInterval;
-    if (isConnected) {
+    if (isConnected && !deviceIP) {
       const pushData = async () => {
         const heart_rate = Math.floor(Math.random() * (105 - 65 + 1)) + 65; // realistic HR
         const spo2 = Math.floor(Math.random() * (100 - 95 + 1)) + 95;
         const motion = Math.random() * 2;
         const gsr = Math.floor(Math.random() * (600 - 300 + 1)) + 300;
-        
+
         try {
           await fetch(`${API_BASE_URL}/api/sensor/data`, {
             method: 'POST',
@@ -119,7 +171,7 @@ export default function UserDashboard({ onLogout, role }) {
 
       // Push immediately on connect
       pushData();
-      
+
       // Simulate real hardware pushing every 5 seconds
       simulatorInterval = setInterval(pushData, 5000);
     }
@@ -130,7 +182,7 @@ export default function UserDashboard({ onLogout, role }) {
     try {
       await fetch(`${API_BASE_URL}/api/action`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
@@ -161,7 +213,7 @@ export default function UserDashboard({ onLogout, role }) {
             <span>Contact Help</span>
           </div>
         </nav>
-        
+
         <button type="button" className="logout-btn" onClick={onLogout} style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'center' }}>
           <LogoutIcon size={18} /> Log out
         </button>
@@ -172,9 +224,12 @@ export default function UserDashboard({ onLogout, role }) {
         <header style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h2>Hello, Patient!</h2>
           <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
-            <button onClick={() => setIsConnected(!isConnected)} className={isConnected ? "action-btn outline" : "action-btn"} style={{ padding: '0.4rem 0.8rem', cursor: 'pointer', borderRadius: '8px', fontSize: '0.9rem' }}>
-              {isConnected ? "Disconnect Wearable" : "Connect Wearable"}
-            </button>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input type="text" placeholder="Device IP" style={{ padding: '0.4rem', borderRadius: '8px', border: '1px solid var(--border)', width: '120px' }} value={deviceIP} onChange={(e) => setDeviceIP(e.target.value)} disabled={isConnected} />
+              <button onClick={() => setIsConnected(!isConnected)} className={isConnected ? "action-btn outline" : "action-btn"} style={{ padding: '0.4rem 0.8rem', cursor: 'pointer', borderRadius: '8px', fontSize: '0.9rem' }}>
+                {isConnected ? "Disconnect" : "Connect"}
+              </button>
+            </div>
             <div className={`status-badge ${vitals.status === 'Emergency' ? 'emergency' : vitals.status === 'Warning' ? 'warning' : 'normal'}`} style={{ fontSize: '1.1rem', padding: '0.5rem 1rem' }}>
               Feeling: {isConnected ? (vitals.status === 'Normal' ? 'Calm 😌' : vitals.status === 'Emergency' ? 'Overwhelmed 😟' : vitals.status === 'Warning' ? 'Elevated 😐' : 'Okay 😐') : 'Offline ⏸️'}
             </div>
@@ -186,9 +241,9 @@ export default function UserDashboard({ onLogout, role }) {
           <div style={{ backgroundColor: 'rgba(56, 189, 248, 0.1)', border: '2px solid var(--w-brand)', padding: '2rem', borderRadius: '16px', marginBottom: '2rem', textAlign: 'center', transition: 'all 0.5s ease' }}>
             <h2 style={{ color: 'var(--w-brand)', marginBottom: '0.5rem', fontSize: '1.8rem' }}>You're safe. Let's slow your breathing.</h2>
             <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', fontSize: '1.1rem' }}>We noticed you might be feeling overwhelmed. Tap start to regulate your breath with me.</p>
-            
+
             <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', backgroundColor: 'var(--bg-elevated)', padding: '2rem', borderRadius: '16px', border: '1px solid var(--border)', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.1)' }}>
-              <div style={{ 
+              <div style={{
                 width: '120px', height: '120px', borderRadius: '50%', backgroundColor: 'var(--w-brand)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '2rem', fontWeight: 'bold', marginBottom: '1.5rem',
                 transform: isBreathing ? `scale(${1 + (timeLeft % 4 < 2 ? 0.3 : 0)})` : 'scale(1)', transition: 'transform 2s ease-in-out', boxShadow: isBreathing && timeLeft % 4 < 2 ? '0 0 30px rgba(56, 189, 248, 0.6)' : 'none'
               }}>
@@ -247,7 +302,7 @@ export default function UserDashboard({ onLogout, role }) {
             <div className="card" style={{ textAlign: 'center', padding: '3rem' }}>
               <h3>Do you need help?</h3>
               <p style={{ margin: '1rem 0', color: 'var(--text-secondary)' }}>Press the button below to alert your caregiver immediately.</p>
-              <button 
+              <button
                 onClick={requestHelp}
                 style={{
                   backgroundColor: 'var(--emergency-color)',
@@ -274,7 +329,7 @@ export default function UserDashboard({ onLogout, role }) {
               <h3>Caregiver Contact</h3>
               <p style={{ marginTop: '1rem', color: 'var(--text-secondary)' }}>Primary Caregiver: <strong>Caregiver</strong></p>
               <p style={{ marginTop: '0.5rem', color: 'var(--text-secondary)' }}>Email: caregiver@harmony.local</p>
-              
+
               <button className="action-btn" style={{ marginTop: '2rem' }} onClick={() => alert('Sending direct message to caregiver...')}>Send Message</button>
             </div>
           </div>
