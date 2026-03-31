@@ -37,7 +37,7 @@ function requireAuth(req, res, next) {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized: Missing or invalid token' });
   }
-  
+
   const token = authHeader.split(' ')[1];
   try {
     const payload = jwt.verify(token, JWT_SECRET);
@@ -56,7 +56,7 @@ async function initDb() {
     const user = await prisma.user.create({
       data: { email: 'admin@harmony.local', password: hashedPassword, name: 'System Admin', role: 'admin' }
     });
-    
+
     const cgPassword = await bcrypt.hash('caregiver123', 10);
     const cg = await prisma.user.create({
       data: { email: 'caregiver@harmony.local', password: cgPassword, name: 'Primary Caregiver', role: 'caregiver' }
@@ -93,12 +93,12 @@ app.post('/api/register', async (req, res) => {
     const { email, password, name, role } = req.body;
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return res.status(400).json({ error: 'User already exists' });
-    
+
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { email, password: hashedPassword, name, role: role || 'caregiver' }
     });
-    
+
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ success: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
   } catch (err) {
@@ -112,10 +112,10 @@ app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    
+
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-    
+
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '12h' });
     res.json({ success: true, token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
   } catch (err) {
@@ -146,10 +146,10 @@ app.post('/api/sensor/data', async (req, res) => {
     // 1. Upsert Device & Get Patient
     let patient;
     const device = await prisma.device.findUnique({ where: { deviceId: device_id }, include: { patient: true } });
-    
+
     if (device) {
       patient = device.patient;
-      await prisma.device.update({ where: { id: device.id }, data: { lastSeen: new Date(), status: 'active' }});
+      await prisma.device.update({ where: { id: device.id }, data: { lastSeen: new Date(), status: 'active' } });
     } else {
       // For demo, if device doesn't exist, attached to first patient
       patient = await prisma.patient.findFirst();
@@ -167,10 +167,10 @@ app.post('/api/sensor/data', async (req, res) => {
       const mlRes = await fetch(`${mlApiUrl}/predict_stress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          heartRate: heart_rate, 
-          spo2, 
-          motion: motion || 0, 
+        body: JSON.stringify({
+          heartRate: heart_rate,
+          spo2,
+          motion: motion || 0,
           gsr: gsr || 400,
           baseline_heart_rate: patient.baselineHeartRate,
           sensitivity_level: patient.sensitivityLevel
@@ -226,7 +226,7 @@ app.post('/api/sensor/data', async (req, res) => {
 app.get('/api/vitals', requireAuth, async (req, res) => {
   const patient = await prisma.patient.findFirst();
   if (!patient) return res.status(404).json({ error: 'No patient found' });
-  
+
   const latestVital = await prisma.vital.findFirst({
     where: { patientId: patient.id },
     orderBy: { recordedAt: 'desc' }
@@ -254,7 +254,7 @@ app.get('/api/alerts', requireAuth, async (req, res) => {
 app.post('/api/action', requireAuth, async (req, res) => {
   const { action, description } = req.body;
   const patient = await prisma.patient.findFirst();
-  
+
   if (patient) {
     const newAlert = await prisma.alert.create({
       data: {
@@ -271,10 +271,18 @@ app.post('/api/action', requireAuth, async (req, res) => {
   }
 });
 
-app.use(express.static(path.join(__dirname, '../frontend/dist')));
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
-});
+const fs = require('fs');
+const distPath = path.join(__dirname, '../frontend/dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.use((req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+} else {
+  // If no frontend codebase is deployed with the API (like on Render backend-only deployments)
+  app.get('/', (req, res) => res.send('Harmony Guardian API is live.'));
+  app.use((req, res) => res.status(404).json({ error: 'Endpoint not found' }));
+}
 
 // Since node server.js is crashing recursively trying to kill and restart on Windows port locks, 
 // let's explicitly kill any listener on 3001 if possible or just use server.listen
